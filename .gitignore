@@ -1,0 +1,41 @@
+# ── Raw and large processed data ──────────────────────────────────────────────
+data/raw/
+
+# Keep only cohort.parquet from processed/
+data/processed/*
+!data/processed/cohort.parquet
+
+# ── Large intermediate fitted parameters ──────────────────────────────────────
+outputs/fitted_params/
+
+# Keep only the selection parquets (app data) from model_scores/
+outputs/model_scores/*
+!outputs/model_scores/selection_global.parquet
+!outputs/model_scores/selection_rolling.parquet
+!outputs/model_scores/selection_summary.parquet
+!outputs/model_scores/selection_temporal.parquet
+
+# Generated figures
+outputs/figures/
+
+# ── Python ─────────────────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+*.egg-info/
+
+# ── DuckDB ─────────────────────────────────────────────────────────────────────
+*.duckdb
+*.wal
+
+# ── Logs ───────────────────────────────────────────────────────────────────────
+*.log
+
+# ── OS / IDE ───────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
