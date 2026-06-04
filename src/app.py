@@ -1034,11 +1034,26 @@ st.set_page_config(
 st.title("UK River Level Distributions — Phase 1")
 st.caption("257-station cohort · daily fits · 1980–2024 · Johnson SU preferred model")
 
+PAGES = [
+    "Station Winners",
+    "River Basin Districts",
+    "Model Selection",
+    "Parameter Evolution",
+    "Station Explorer",
+]
+
+# Read page from URL query param; fall back to first page
+_qp_page = st.query_params.get("page", PAGES[0])
+_default  = _qp_page if _qp_page in PAGES else PAGES[0]
+
 page = st.sidebar.radio(
     "Navigate",
-    ["Station Winners", "River Basin Districts",
-     "Model Selection", "Parameter Evolution", "Station Explorer"],
+    PAGES,
+    index=PAGES.index(_default),
 )
+
+# Keep the URL in sync so every page is bookmarkable / shareable
+st.query_params["page"] = page
 
 if page == "Station Winners":
     page_station_winners()
