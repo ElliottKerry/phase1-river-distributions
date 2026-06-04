@@ -902,8 +902,8 @@ def _rbd_mode_charts(mode: str, summary: pd.DataFrame, js_params: pd.DataFrame,
         title=f"Johnson SU AIC win rate by RBD — {mode_label}",
         coloraxis_colorbar_title="JS wins %",
         map=dict(
-            center={"lat": 55.5, "lon": -3.5},
-            zoom=4.8,
+            center={"lat": 54.5, "lon": -3.5},
+            zoom=4.4,
             bounds=dict(west=-9, east=3, south=49, north=62),
         ),
     )
