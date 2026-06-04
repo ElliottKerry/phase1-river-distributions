@@ -931,34 +931,59 @@ def _rbd_mode_charts(mode: str, summary: pd.DataFrame, js_params: pd.DataFrame,
     _plotly_layout(fig_bar, height=380)
     st.plotly_chart(fig_bar, use_container_width=True)
 
-    # JS parameter evolution
-    with st.expander("Johnson SU parameter evolution by RBD"):
+    # JS parameter chart — rolling time series (daily/monthly) or global bar (log_daily)
+    param_labels_map = {
+        "scale_median": "Scale (variance proxy)",
+        "b_median":     "b (tail weight)",
+        "a_median":     "a (skewness)",
+        "loc_median":   "Location",
+    }
+    is_rolling = "window_mid_year" in js_params.columns
+
+    expander_title = (
+        "Johnson SU parameter evolution by RBD"
+        if is_rolling else
+        "Johnson SU parameters by RBD (global fit)"
+    )
+    with st.expander(expander_title):
         param = st.selectbox(
             "Parameter",
-            ["scale_median", "b_median", "a_median", "loc_median"],
-            format_func=lambda x: {
-                "scale_median": "Scale (variance proxy)",
-                "b_median":     "b (tail weight)",
-                "a_median":     "a (skewness)",
-                "loc_median":   "Location",
-            }[x],
+            list(param_labels_map.keys()),
+            format_func=lambda x: param_labels_map[x],
             key=f"rbd_param_{key_sfx}",
         )
-        fig_evo = go.Figure()
-        for rbd in rbd_order:
-            d = js_params[js_params["rbd_name"] == rbd].sort_values("window_mid_year")
-            if d.empty:
-                continue
-            fig_evo.add_trace(go.Scatter(
-                x=d["window_mid_year"], y=d[param],
-                mode="lines", name=rbd, line=dict(width=2),
-                hovertemplate=f"<b>{rbd}</b><br>Year: %{{x}}<br>Value: %{{y:.4f}}<extra></extra>",
+        if is_rolling:
+            fig_evo = go.Figure()
+            for rbd in rbd_order:
+                d = js_params[js_params["rbd_name"] == rbd].sort_values("window_mid_year")
+                if d.empty:
+                    continue
+                fig_evo.add_trace(go.Scatter(
+                    x=d["window_mid_year"], y=d[param],
+                    mode="lines", name=rbd, line=dict(width=2),
+                    hovertemplate=f"<b>{rbd}</b><br>Year: %{{x}}<br>Value: %{{y:.4f}}<extra></extra>",
+                ))
+            _plotly_layout(fig_evo,
+                           title=f"{param_labels_map[param]} by RBD — 10-year rolling medians",
+                           xaxis_title="Window mid-year",
+                           height=380)
+            st.plotly_chart(fig_evo, use_container_width=True)
+        else:
+            # Global fit: single bar per RBD
+            params_ord = js_params.set_index("rbd_name").reindex(rbd_order).reset_index()
+            fig_bar_p = go.Figure(go.Bar(
+                x=params_ord["rbd_name"],
+                y=params_ord[param],
+                marker_color="#009E73",
+                hovertemplate="<b>%{x}</b><br>Value: %{y:.4f}<extra></extra>",
             ))
-        _plotly_layout(fig_evo,
-                       title=f"{param} by RBD — 10-year rolling medians ({mode})",
-                       xaxis_title="Window mid-year",
-                       height=380)
-        st.plotly_chart(fig_evo, use_container_width=True)
+            _plotly_layout(fig_bar_p,
+                           title=f"{param_labels_map[param]} by RBD — global log-daily fit",
+                           yaxis_title=param_labels_map[param],
+                           xaxis_title="River Basin District",
+                           height=360,
+                           showlegend=False)
+            st.plotly_chart(fig_bar_p, use_container_width=True)
 
     # Summary table
     with st.expander("Full RBD summary table"):
