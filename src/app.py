@@ -979,21 +979,23 @@ def page_rbd() -> None:
     st.header("River Basin Districts")
     st.markdown(
         "257 stations split across 9 River Basin Districts (EA WFD boundaries). "
-        "Compare how distribution preferences differ between daily and monthly fit granularities."
+        "Compare distribution preferences across raw daily, monthly, and log-transformed daily fits."
     )
 
     geojson          = load_rbd_boundaries()
     summary_daily    = load_rbd_summary("daily")
     summary_monthly  = load_rbd_summary("monthly")
+    summary_log      = load_rbd_summary("log_daily")
     params_daily     = load_rbd_js_params("daily")
     params_monthly   = load_rbd_js_params("monthly")
+    params_log       = load_rbd_js_params("log_daily")
 
     # RBD order fixed by daily JS win rate (descending)
     js_daily = summary_daily[summary_daily["distribution"] == "johnson_su"].copy()
     rbd_order = js_daily.sort_values("pct_win_aic", ascending=False)["rbd_name"].tolist()
 
-    tab_daily, tab_monthly, tab_compare = st.tabs(
-        ["Daily Fits", "Monthly Fits", "Daily vs Monthly"]
+    tab_daily, tab_monthly, tab_log, tab_compare = st.tabs(
+        ["Daily Fits", "Monthly Fits", "Log-transformed", "Comparison"]
     )
 
     with tab_daily:
@@ -1006,71 +1008,82 @@ def page_rbd() -> None:
         )
         _rbd_mode_charts("monthly", summary_monthly, params_monthly, geojson, rbd_order, "m")
 
+    with tab_log:
+        st.info(
+            "Log-transformed fits apply log(mean daily level) before fitting. "
+            "This compresses the right tail, making the data closer to symmetric. "
+            "Johnson SU still leads but Weibull becomes a strong competitor (~31% nationally)."
+        )
+        _rbd_mode_charts("log_daily", summary_log, params_log, geojson, rbd_order, "l")
+
     with tab_compare:
         st.markdown(
-            "Johnson SU AIC win rate collapses sharply when moving from daily to monthly "
-            "aggregation — monthly averaging smooths out the extreme tail events that make "
-            "daily river levels distinctly non-normal."
+            "Johnson SU AIC win rates across all three fitting approaches. "
+            "Monthly averaging and log-transformation both suppress tail behaviour, "
+            "reducing Johnson SU's dominance — but it remains competitive in both cases."
         )
 
         js_monthly = summary_monthly[summary_monthly["distribution"] == "johnson_su"].copy()
+        js_log     = summary_log[summary_log["distribution"] == "johnson_su"].copy()
 
-        compare = js_daily[["rbd_name", "n_stations", "pct_win_aic", "median_ks"]].rename(
-            columns={"pct_win_aic": "daily_pct", "median_ks": "daily_ks"}
-        ).merge(
-            js_monthly[["rbd_name", "pct_win_aic", "median_ks"]].rename(
-                columns={"pct_win_aic": "monthly_pct", "median_ks": "monthly_ks"}
-            ),
-            on="rbd_name", how="outer",
+        compare = (
+            js_daily[["rbd_name", "n_stations", "pct_win_aic", "median_ks"]]
+            .rename(columns={"pct_win_aic": "daily_pct", "median_ks": "daily_ks"})
+            .merge(
+                js_monthly[["rbd_name", "pct_win_aic", "median_ks"]]
+                .rename(columns={"pct_win_aic": "monthly_pct", "median_ks": "monthly_ks"}),
+                on="rbd_name", how="outer",
+            )
+            .merge(
+                js_log[["rbd_name", "pct_win_aic", "median_ks"]]
+                .rename(columns={"pct_win_aic": "log_pct", "median_ks": "log_ks"}),
+                on="rbd_name", how="outer",
+            )
         )
         compare = compare.set_index("rbd_name").reindex(rbd_order).reset_index()
 
-        # Win-rate comparison bar chart
+        # Win-rate comparison
         fig_cmp = go.Figure()
-        fig_cmp.add_trace(go.Bar(
-            x=compare["rbd_name"],
-            y=compare["daily_pct"],
-            name="Daily fits",
-            marker_color="#0072B2",
-            hovertemplate="<b>%{x}</b><br>Daily JS wins: %{y:.1f}%<extra></extra>",
-        ))
-        fig_cmp.add_trace(go.Bar(
-            x=compare["rbd_name"],
-            y=compare["monthly_pct"],
-            name="Monthly fits",
-            marker_color="#E69F00",
-            hovertemplate="<b>%{x}</b><br>Monthly JS wins: %{y:.1f}%<extra></extra>",
-        ))
+        for label, col, colour in [
+            ("Raw daily",       "daily_pct",   "#0072B2"),
+            ("Log-transformed", "log_pct",     "#009E73"),
+            ("Monthly",         "monthly_pct", "#E69F00"),
+        ]:
+            fig_cmp.add_trace(go.Bar(
+                x=compare["rbd_name"],
+                y=compare[col],
+                name=label,
+                marker_color=colour,
+                hovertemplate=f"<b>%{{x}}</b><br>{label} JS wins: %{{y:.1f}}%<extra></extra>",
+            ))
         _plotly_layout(
             fig_cmp,
-            title="Johnson SU AIC win rate — daily vs monthly fits",
+            title="Johnson SU AIC win rate by RBD — raw daily vs log-transformed vs monthly",
             yaxis_title="% of stations where Johnson SU ranks first (AIC)",
             xaxis_title="River Basin District",
             barmode="group",
-            height=420,
+            height=440,
             yaxis_range=[0, 100],
         )
         st.plotly_chart(fig_cmp, use_container_width=True)
 
         # KS comparison
         fig_ks = go.Figure()
-        fig_ks.add_trace(go.Bar(
-            x=compare["rbd_name"],
-            y=compare["daily_ks"],
-            name="Daily fits",
-            marker_color="#0072B2",
-            hovertemplate="<b>%{x}</b><br>Daily median KS: %{y:.4f}<extra></extra>",
-        ))
-        fig_ks.add_trace(go.Bar(
-            x=compare["rbd_name"],
-            y=compare["monthly_ks"],
-            name="Monthly fits",
-            marker_color="#E69F00",
-            hovertemplate="<b>%{x}</b><br>Monthly median KS: %{y:.4f}<extra></extra>",
-        ))
+        for label, col, colour in [
+            ("Raw daily",       "daily_ks",   "#0072B2"),
+            ("Log-transformed", "log_ks",     "#009E73"),
+            ("Monthly",         "monthly_ks", "#E69F00"),
+        ]:
+            fig_ks.add_trace(go.Bar(
+                x=compare["rbd_name"],
+                y=compare[col],
+                name=label,
+                marker_color=colour,
+                hovertemplate=f"<b>%{{x}}</b><br>{label} median KS: %{{y:.4f}}<extra></extra>",
+            ))
         _plotly_layout(
             fig_ks,
-            title="Johnson SU median KS statistic — daily vs monthly fits",
+            title="Johnson SU median KS statistic — raw daily vs log-transformed vs monthly",
             yaxis_title="Median KS statistic (lower = better fit)",
             xaxis_title="River Basin District",
             barmode="group",
@@ -1079,11 +1092,12 @@ def page_rbd() -> None:
         st.plotly_chart(fig_ks, use_container_width=True)
 
         # Summary table
-        compare["drop_pct"] = compare["daily_pct"] - compare["monthly_pct"]
-        display = compare[["rbd_name", "n_stations", "daily_pct", "monthly_pct",
-                            "drop_pct", "daily_ks", "monthly_ks"]].copy()
-        display.columns = ["RBD", "Stations", "Daily JS %", "Monthly JS %",
-                           "Drop (ppt)", "Daily KS", "Monthly KS"]
+        display = compare[["rbd_name", "n_stations",
+                            "daily_pct", "log_pct", "monthly_pct",
+                            "daily_ks",  "log_ks",  "monthly_ks"]].copy()
+        display.columns = ["RBD", "Stations",
+                           "Daily JS %", "Log-daily JS %", "Monthly JS %",
+                           "Daily KS",   "Log-daily KS",   "Monthly KS"]
         st.dataframe(display.round(2), use_container_width=True, hide_index=True)
 
 
