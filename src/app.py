@@ -782,6 +782,160 @@ def page_station_winners() -> None:
         st.dataframe(df_show.round(4), use_container_width=True, hide_index=True)
 
 
+# ── Page: River Basin Districts ───────────────────────────────────────────────
+
+SUBGROUPS_DIR = ROOT / "outputs" / "subgroups"
+
+@st.cache_data
+def load_rbd_summary() -> pd.DataFrame:
+    return pd.read_parquet(SUBGROUPS_DIR / "rbd_selection_summary.parquet")
+
+@st.cache_data
+def load_rbd_cohort() -> pd.DataFrame:
+    return pd.read_parquet(SUBGROUPS_DIR / "cohort_rbd.parquet")
+
+@st.cache_data
+def load_rbd_boundaries() -> dict:
+    import json
+    with open(SUBGROUPS_DIR / "rbd_boundaries.geojson") as f:
+        return json.load(f)
+
+@st.cache_data
+def load_rbd_js_params() -> pd.DataFrame:
+    return pd.read_parquet(SUBGROUPS_DIR / "rbd_js_params.parquet")
+
+
+def page_rbd() -> None:
+    st.header("River Basin Districts")
+    st.markdown(
+        "257 stations split across 9 River Basin Districts (EA WFD boundaries). "
+        "Johnson SU win rates and fit quality vary substantially by region."
+    )
+
+    summary  = load_rbd_summary()
+    cohort   = load_rbd_cohort()
+    geojson  = load_rbd_boundaries()
+    js_params = load_rbd_js_params()
+
+    criterion = st.radio("Ranking criterion", ["AIC", "BIC", "KS"],
+                         horizontal=True, key="rbd_criterion")
+    metric_col = {"AIC": "pct_win_aic", "BIC": "pct_win_aic", "KS": "pct_win_aic"}[criterion]
+
+    js_summary = summary[summary["distribution"] == "johnson_su"].copy()
+    js_summary = js_summary.sort_values("pct_win_aic", ascending=False)
+
+    # ── Choropleth map ─────────────────────────────────────────────────────────
+    fig_map = px.choropleth_map(
+        js_summary,
+        geojson=geojson,
+        locations="rbd_name",
+        featureidkey="properties.rbd_name",
+        color="pct_win_aic",
+        color_continuous_scale="Blues",
+        range_color=(0, 100),
+        hover_name="rbd_name",
+        hover_data={
+            "pct_win_aic":  ":.1f",
+            "n_stations":   True,
+            "median_ks":    ":.4f",
+            "mean_akaike":  ":.4f",
+            "rbd_name":     False,
+        },
+        labels={
+            "pct_win_aic":  "Johnson SU AIC wins %",
+            "n_stations":   "Stations",
+            "median_ks":    "Median KS",
+            "mean_akaike":  "Mean Akaike wt.",
+        },
+        zoom=4.8,
+        center={"lat": 52.8, "lon": -1.8},
+        map_style="open-street-map",
+        opacity=0.65,
+    )
+    fig_map.update_layout(
+        height=520,
+        margin=dict(l=0, r=0, t=40, b=0),
+        title="Johnson SU AIC win rate by River Basin District",
+        coloraxis_colorbar_title="JS wins %",
+    )
+    st.plotly_chart(fig_map, use_container_width=True)
+
+    # ── Bar chart: all distributions by RBD ───────────────────────────────────
+    st.subheader("Win rates by distribution and RBD")
+    rbd_order = js_summary["rbd_name"].tolist()
+
+    sel_dists = st.multiselect(
+        "Distributions",
+        options=list(DIST_LABELS.keys()),
+        default=["johnson_su", "lognormal", "gamma"],
+        format_func=lambda x: DIST_LABELS[x],
+        key="rbd_dists",
+    )
+
+    sub = summary[summary["distribution"].isin(sel_dists)].copy()
+    sub["dist_label"] = sub["distribution"].map(DIST_LABELS)
+
+    fig_bar = px.bar(
+        sub,
+        x="rbd_name",
+        y="pct_win_aic",
+        color="dist_label",
+        barmode="group",
+        color_discrete_map={DIST_LABELS[d]: PALETTE[d] for d in PALETTE},
+        category_orders={"rbd_name": rbd_order,
+                         "dist_label": [DIST_LABELS[d] for d in sel_dists]},
+        labels={"pct_win_aic": "AIC win rate (%)", "rbd_name": "River Basin District",
+                "dist_label": "Distribution"},
+        hover_data={"n_stations": True, "median_ks": ":.4f"},
+    )
+    _plotly_layout(fig_bar, height=380)
+    st.plotly_chart(fig_bar, use_container_width=True)
+
+    # ── JS parameter evolution by RBD ─────────────────────────────────────────
+    with st.expander("Johnson SU scale parameter by RBD over time"):
+        param = st.selectbox(
+            "Parameter",
+            ["scale_median", "b_median", "a_median", "loc_median"],
+            format_func=lambda x: {
+                "scale_median": "Scale (variance proxy)",
+                "b_median":     "b (tail weight)",
+                "a_median":     "a (skewness)",
+                "loc_median":   "Location",
+            }[x],
+            key="rbd_param",
+        )
+        fig_evo = go.Figure()
+        for rbd in rbd_order:
+            d = js_params[js_params["rbd_name"] == rbd].sort_values("window_mid_year")
+            if d.empty:
+                continue
+            fig_evo.add_trace(go.Scatter(
+                x=d["window_mid_year"], y=d[param],
+                mode="lines", name=rbd, line=dict(width=2),
+                hovertemplate=f"<b>{rbd}</b><br>Year: %{{x}}<br>Value: %{{y:.4f}}<extra></extra>",
+            ))
+        _plotly_layout(fig_evo,
+                       title=f"{param} by RBD — 10-year rolling medians",
+                       xaxis_title="Window mid-year",
+                       height=380)
+        st.plotly_chart(fig_evo, use_container_width=True)
+
+    # ── Summary table ──────────────────────────────────────────────────────────
+    with st.expander("Full RBD summary table"):
+        st.dataframe(
+            js_summary[["rbd_name", "n_stations", "pct_win_aic",
+                         "median_ks", "mean_akaike"]]
+            .rename(columns={
+                "rbd_name":    "RBD",
+                "n_stations":  "Stations",
+                "pct_win_aic": "JS AIC wins %",
+                "median_ks":   "Median KS",
+                "mean_akaike": "Mean Akaike wt.",
+            }).reset_index(drop=True).round(4),
+            use_container_width=True, hide_index=True,
+        )
+
+
 # ── App shell ──────────────────────────────────────────────────────────────────
 
 st.set_page_config(
@@ -795,11 +949,14 @@ st.caption("257-station cohort · daily fits · 1980–2024 · Johnson SU prefer
 
 page = st.sidebar.radio(
     "Navigate",
-    ["Station Winners", "Model Selection", "Parameter Evolution", "Station Explorer"],
+    ["Station Winners", "River Basin Districts",
+     "Model Selection", "Parameter Evolution", "Station Explorer"],
 )
 
 if page == "Station Winners":
     page_station_winners()
+elif page == "River Basin Districts":
+    page_rbd()
 elif page == "Model Selection":
     page_model_selection()
 elif page == "Parameter Evolution":
