@@ -680,15 +680,64 @@ def page_station_winners() -> None:
 
     df = load_station_winners(criterion)
 
+    # Join RBD if available
+    try:
+        rbd_col = load_rbd_cohort()[["station_reference", "rbd_name"]]
+        df = df.merge(rbd_col, on="station_reference", how="left")
+        has_rbd = True
+    except Exception:
+        has_rbd = False
+
+    # ── Filters ───────────────────────────────────────────────────────────────
+    with st.expander("Filters", expanded=True):
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            all_dists = [DIST_LABELS[d] for d in PALETTE if d in df["distribution"].unique()]
+            sel_dists = st.multiselect(
+                "Distribution", options=all_dists, default=all_dists,
+                key="map_f_dist",
+            )
+
+        with col2:
+            if has_rbd:
+                all_rbds = sorted(df["rbd_name"].dropna().unique().tolist())
+                sel_rbds = st.multiselect(
+                    "River Basin District", options=all_rbds, default=all_rbds,
+                    key="map_f_rbd",
+                )
+            else:
+                sel_rbds = None
+
+        with col3:
+            ks_max = float(df["ks_statistic"].max())
+            ks_thresh = st.slider(
+                "Max KS statistic", min_value=0.01, max_value=round(ks_max, 2),
+                value=round(ks_max, 2), step=0.01, key="map_f_ks",
+            )
+
+    # Apply filters
+    mask = (
+        df["dist_label"].isin(sel_dists) &
+        (df["ks_statistic"] <= ks_thresh)
+    )
+    if has_rbd and sel_rbds is not None:
+        mask &= df["rbd_name"].isin(sel_rbds)
+    df_filtered = df[mask].copy()
+
+    n_total    = len(df)
+    n_filtered = len(df_filtered)
+    st.caption(f"Showing {n_filtered} of {n_total} stations")
+
     # ── Win-count summary bar ──────────────────────────────────────────────────
     counts = (
-        df.groupby("distribution").size()
+        df_filtered.groupby("distribution").size()
           .rename("n_stations").reset_index()
           .sort_values("n_stations", ascending=False)
     )
-    counts["colour"]    = counts["distribution"].map(PALETTE)
-    counts["dist_label"]= counts["distribution"].map(DIST_LABELS)
-    counts["pct"]       = 100 * counts["n_stations"] / len(df)
+    counts["colour"]     = counts["distribution"].map(PALETTE)
+    counts["dist_label"] = counts["distribution"].map(DIST_LABELS)
+    counts["pct"]        = 100 * counts["n_stations"] / max(n_filtered, 1)
 
     fig_bar = go.Figure()
     for _, row in counts.iterrows():
@@ -707,39 +756,43 @@ def page_station_winners() -> None:
         ))
     _plotly_layout(
         fig_bar,
-        title=f"Number of stations where each distribution ranks first ({criterion})",
+        title=f"Stations ranking first by {criterion}  ({n_filtered} shown)",
         yaxis_title="Number of stations",
-        height=320,
+        height=300,
         bargap=0.25,
     )
     st.plotly_chart(fig_bar, use_container_width=True)
 
     # ── Map ────────────────────────────────────────────────────────────────────
-    # Order categories so Johnson SU always gets its fixed colour
-    cat_order = [DIST_LABELS[d] for d in PALETTE if d in df["distribution"].unique()]
+    cat_order = [DIST_LABELS[d] for d in PALETTE if d in df_filtered["distribution"].unique()]
+
+    hover_data = {
+        "river_name":        True,
+        "station_reference": True,
+        "dist_label":        True,
+        "ks_statistic":      ":.4f",
+        "akaike_weight":     ":.4f",
+        "lat":               False,
+        "long":              False,
+    }
+    if has_rbd:
+        hover_data["rbd_name"] = True
 
     fig_map = px.scatter_mapbox(
-        df,
+        df_filtered,
         lat="lat", lon="long",
         color="dist_label",
         color_discrete_map={DIST_LABELS[d]: PALETTE[d] for d in PALETTE},
         category_orders={"dist_label": cat_order},
         hover_name="label",
-        hover_data={
-            "river_name":          True,
-            "station_reference":   True,
-            "dist_label":          True,
-            "ks_statistic":        ":.4f",
-            "akaike_weight":       ":.4f",
-            "lat":                 False,
-            "long":                False,
-        },
+        hover_data=hover_data,
         labels={
-            "dist_label":     "Best-fit distribution",
-            "ks_statistic":   "KS statistic",
-            "akaike_weight":  "Akaike weight",
-            "river_name":     "River",
+            "dist_label":        "Best-fit distribution",
+            "ks_statistic":      "KS statistic",
+            "akaike_weight":     "Akaike weight",
+            "river_name":        "River",
             "station_reference": "Station ref.",
+            "rbd_name":          "River Basin District",
         },
         zoom=5.2,
         center={"lat": 54.0, "lon": -2.0},
@@ -752,23 +805,16 @@ def page_station_winners() -> None:
         margin=dict(l=0, r=0, t=40, b=0),
         title=f"Best-fit distribution by station ({criterion})",
         legend_title_text="Best-fit distribution",
+        mapbox=dict(bounds=dict(west=-9, east=3, south=49, north=62)),
     )
     st.plotly_chart(fig_map, use_container_width=True)
 
     # ── Sortable table ─────────────────────────────────────────────────────────
-    with st.expander("Full station table"):
-        dist_filter = st.multiselect(
-            "Filter by distribution",
-            options=counts["dist_label"].tolist(),
-            default=counts["dist_label"].tolist(),
-            key="map_dist_filter",
-        )
-        df_show = df[df["dist_label"].isin(dist_filter)].copy()
-        df_show = df_show[[
-            "station_reference", "label", "river_name",
-            "dist_label", "ks_statistic", "akaike_weight",
-            "first_year", "last_year", "year_coverage_frac",
-        ]].rename(columns={
+    with st.expander("Station table"):
+        show_cols = ["station_reference", "label", "river_name",
+                     "dist_label", "ks_statistic", "akaike_weight",
+                     "first_year", "last_year", "year_coverage_frac"]
+        rename = {
             "station_reference": "Ref.",
             "label":             "Station",
             "river_name":        "River",
@@ -778,8 +824,16 @@ def page_station_winners() -> None:
             "first_year":        "From",
             "last_year":         "To",
             "year_coverage_frac":"Coverage",
-        }).sort_values("KS").reset_index(drop=True)
-        st.dataframe(df_show.round(4), use_container_width=True, hide_index=True)
+        }
+        if has_rbd:
+            show_cols.insert(3, "rbd_name")
+            rename["rbd_name"] = "RBD"
+
+        st.dataframe(
+            df_filtered[show_cols].rename(columns=rename)
+                       .sort_values("KS").reset_index(drop=True).round(4),
+            use_container_width=True, hide_index=True,
+        )
 
 
 # ── Page: River Basin Districts ───────────────────────────────────────────────
@@ -787,8 +841,8 @@ def page_station_winners() -> None:
 SUBGROUPS_DIR = ROOT / "outputs" / "subgroups"
 
 @st.cache_data
-def load_rbd_summary() -> pd.DataFrame:
-    return pd.read_parquet(SUBGROUPS_DIR / "rbd_selection_summary.parquet")
+def load_rbd_summary(mode: str = "daily") -> pd.DataFrame:
+    return pd.read_parquet(SUBGROUPS_DIR / mode / "rbd_selection_summary.parquet")
 
 @st.cache_data
 def load_rbd_cohort() -> pd.DataFrame:
@@ -801,30 +855,19 @@ def load_rbd_boundaries() -> dict:
         return json.load(f)
 
 @st.cache_data
-def load_rbd_js_params() -> pd.DataFrame:
-    return pd.read_parquet(SUBGROUPS_DIR / "rbd_js_params.parquet")
+def load_rbd_js_params(mode: str = "daily") -> pd.DataFrame:
+    return pd.read_parquet(SUBGROUPS_DIR / mode / "rbd_js_params.parquet")
 
 
-def page_rbd() -> None:
-    st.header("River Basin Districts")
-    st.markdown(
-        "257 stations split across 9 River Basin Districts (EA WFD boundaries). "
-        "Johnson SU win rates and fit quality vary substantially by region."
-    )
-
-    summary  = load_rbd_summary()
-    cohort   = load_rbd_cohort()
-    geojson  = load_rbd_boundaries()
-    js_params = load_rbd_js_params()
-
-    criterion = st.radio("Ranking criterion", ["AIC", "BIC", "KS"],
-                         horizontal=True, key="rbd_criterion")
-    metric_col = {"AIC": "pct_win_aic", "BIC": "pct_win_aic", "KS": "pct_win_aic"}[criterion]
-
+def _rbd_mode_charts(mode: str, summary: pd.DataFrame, js_params: pd.DataFrame,
+                     geojson: dict, rbd_order: list, key_sfx: str) -> None:
+    """Render choropleth, bar chart, JS evolution, and summary table for one mode."""
     js_summary = summary[summary["distribution"] == "johnson_su"].copy()
-    js_summary = js_summary.sort_values("pct_win_aic", ascending=False)
+    js_summary = js_summary.set_index("rbd_name").reindex(rbd_order).reset_index()
 
-    # ── Choropleth map ─────────────────────────────────────────────────────────
+    # Choropleth
+    mode_label = "daily global fits (~16 k obs/station)" if mode == "daily" \
+        else "monthly pooled fits (~514 obs/station)"
     fig_map = px.choropleth_map(
         js_summary,
         geojson=geojson,
@@ -835,11 +878,11 @@ def page_rbd() -> None:
         range_color=(0, 100),
         hover_name="rbd_name",
         hover_data={
-            "pct_win_aic":  ":.1f",
-            "n_stations":   True,
-            "median_ks":    ":.4f",
-            "mean_akaike":  ":.4f",
-            "rbd_name":     False,
+            "pct_win_aic": ":.1f",
+            "n_stations":  True,
+            "median_ks":   ":.4f",
+            "mean_akaike": ":.4f",
+            "rbd_name":    False,
         },
         labels={
             "pct_win_aic":  "Johnson SU AIC wins %",
@@ -855,26 +898,23 @@ def page_rbd() -> None:
     fig_map.update_layout(
         height=520,
         margin=dict(l=0, r=0, t=40, b=0),
-        title="Johnson SU AIC win rate by River Basin District",
+        title=f"Johnson SU AIC win rate by RBD — {mode_label}",
         coloraxis_colorbar_title="JS wins %",
+        map=dict(bounds=dict(west=-9, east=3, south=49, north=62)),
     )
     st.plotly_chart(fig_map, use_container_width=True)
 
-    # ── Bar chart: all distributions by RBD ───────────────────────────────────
+    # Bar chart: distributions by RBD
     st.subheader("Win rates by distribution and RBD")
-    rbd_order = js_summary["rbd_name"].tolist()
-
     sel_dists = st.multiselect(
         "Distributions",
         options=list(DIST_LABELS.keys()),
         default=["johnson_su", "lognormal", "gamma"],
         format_func=lambda x: DIST_LABELS[x],
-        key="rbd_dists",
+        key=f"rbd_dists_{key_sfx}",
     )
-
     sub = summary[summary["distribution"].isin(sel_dists)].copy()
     sub["dist_label"] = sub["distribution"].map(DIST_LABELS)
-
     fig_bar = px.bar(
         sub,
         x="rbd_name",
@@ -891,8 +931,8 @@ def page_rbd() -> None:
     _plotly_layout(fig_bar, height=380)
     st.plotly_chart(fig_bar, use_container_width=True)
 
-    # ── JS parameter evolution by RBD ─────────────────────────────────────────
-    with st.expander("Johnson SU scale parameter by RBD over time"):
+    # JS parameter evolution
+    with st.expander("Johnson SU parameter evolution by RBD"):
         param = st.selectbox(
             "Parameter",
             ["scale_median", "b_median", "a_median", "loc_median"],
@@ -902,7 +942,7 @@ def page_rbd() -> None:
                 "a_median":     "a (skewness)",
                 "loc_median":   "Location",
             }[x],
-            key="rbd_param",
+            key=f"rbd_param_{key_sfx}",
         )
         fig_evo = go.Figure()
         for rbd in rbd_order:
@@ -915,16 +955,15 @@ def page_rbd() -> None:
                 hovertemplate=f"<b>{rbd}</b><br>Year: %{{x}}<br>Value: %{{y:.4f}}<extra></extra>",
             ))
         _plotly_layout(fig_evo,
-                       title=f"{param} by RBD — 10-year rolling medians",
+                       title=f"{param} by RBD — 10-year rolling medians ({mode})",
                        xaxis_title="Window mid-year",
                        height=380)
         st.plotly_chart(fig_evo, use_container_width=True)
 
-    # ── Summary table ──────────────────────────────────────────────────────────
+    # Summary table
     with st.expander("Full RBD summary table"):
         st.dataframe(
-            js_summary[["rbd_name", "n_stations", "pct_win_aic",
-                         "median_ks", "mean_akaike"]]
+            js_summary[["rbd_name", "n_stations", "pct_win_aic", "median_ks", "mean_akaike"]]
             .rename(columns={
                 "rbd_name":    "RBD",
                 "n_stations":  "Stations",
@@ -934,6 +973,118 @@ def page_rbd() -> None:
             }).reset_index(drop=True).round(4),
             use_container_width=True, hide_index=True,
         )
+
+
+def page_rbd() -> None:
+    st.header("River Basin Districts")
+    st.markdown(
+        "257 stations split across 9 River Basin Districts (EA WFD boundaries). "
+        "Compare how distribution preferences differ between daily and monthly fit granularities."
+    )
+
+    geojson          = load_rbd_boundaries()
+    summary_daily    = load_rbd_summary("daily")
+    summary_monthly  = load_rbd_summary("monthly")
+    params_daily     = load_rbd_js_params("daily")
+    params_monthly   = load_rbd_js_params("monthly")
+
+    # RBD order fixed by daily JS win rate (descending)
+    js_daily = summary_daily[summary_daily["distribution"] == "johnson_su"].copy()
+    rbd_order = js_daily.sort_values("pct_win_aic", ascending=False)["rbd_name"].tolist()
+
+    tab_daily, tab_monthly, tab_compare = st.tabs(
+        ["Daily Fits", "Monthly Fits", "Daily vs Monthly"]
+    )
+
+    with tab_daily:
+        _rbd_mode_charts("daily", summary_daily, params_daily, geojson, rbd_order, "d")
+
+    with tab_monthly:
+        st.info(
+            "Monthly pooled fits use ~514 monthly mean observations per station — far fewer "
+            "extremes than 16,000 daily values, so heavy-tailed distributions win less often."
+        )
+        _rbd_mode_charts("monthly", summary_monthly, params_monthly, geojson, rbd_order, "m")
+
+    with tab_compare:
+        st.markdown(
+            "Johnson SU AIC win rate collapses sharply when moving from daily to monthly "
+            "aggregation — monthly averaging smooths out the extreme tail events that make "
+            "daily river levels distinctly non-normal."
+        )
+
+        js_monthly = summary_monthly[summary_monthly["distribution"] == "johnson_su"].copy()
+
+        compare = js_daily[["rbd_name", "n_stations", "pct_win_aic", "median_ks"]].rename(
+            columns={"pct_win_aic": "daily_pct", "median_ks": "daily_ks"}
+        ).merge(
+            js_monthly[["rbd_name", "pct_win_aic", "median_ks"]].rename(
+                columns={"pct_win_aic": "monthly_pct", "median_ks": "monthly_ks"}
+            ),
+            on="rbd_name", how="outer",
+        )
+        compare = compare.set_index("rbd_name").reindex(rbd_order).reset_index()
+
+        # Win-rate comparison bar chart
+        fig_cmp = go.Figure()
+        fig_cmp.add_trace(go.Bar(
+            x=compare["rbd_name"],
+            y=compare["daily_pct"],
+            name="Daily fits",
+            marker_color="#0072B2",
+            hovertemplate="<b>%{x}</b><br>Daily JS wins: %{y:.1f}%<extra></extra>",
+        ))
+        fig_cmp.add_trace(go.Bar(
+            x=compare["rbd_name"],
+            y=compare["monthly_pct"],
+            name="Monthly fits",
+            marker_color="#E69F00",
+            hovertemplate="<b>%{x}</b><br>Monthly JS wins: %{y:.1f}%<extra></extra>",
+        ))
+        _plotly_layout(
+            fig_cmp,
+            title="Johnson SU AIC win rate — daily vs monthly fits",
+            yaxis_title="% of stations where Johnson SU ranks first (AIC)",
+            xaxis_title="River Basin District",
+            barmode="group",
+            height=420,
+            yaxis_range=[0, 100],
+        )
+        st.plotly_chart(fig_cmp, use_container_width=True)
+
+        # KS comparison
+        fig_ks = go.Figure()
+        fig_ks.add_trace(go.Bar(
+            x=compare["rbd_name"],
+            y=compare["daily_ks"],
+            name="Daily fits",
+            marker_color="#0072B2",
+            hovertemplate="<b>%{x}</b><br>Daily median KS: %{y:.4f}<extra></extra>",
+        ))
+        fig_ks.add_trace(go.Bar(
+            x=compare["rbd_name"],
+            y=compare["monthly_ks"],
+            name="Monthly fits",
+            marker_color="#E69F00",
+            hovertemplate="<b>%{x}</b><br>Monthly median KS: %{y:.4f}<extra></extra>",
+        ))
+        _plotly_layout(
+            fig_ks,
+            title="Johnson SU median KS statistic — daily vs monthly fits",
+            yaxis_title="Median KS statistic (lower = better fit)",
+            xaxis_title="River Basin District",
+            barmode="group",
+            height=380,
+        )
+        st.plotly_chart(fig_ks, use_container_width=True)
+
+        # Summary table
+        compare["drop_pct"] = compare["daily_pct"] - compare["monthly_pct"]
+        display = compare[["rbd_name", "n_stations", "daily_pct", "monthly_pct",
+                            "drop_pct", "daily_ks", "monthly_ks"]].copy()
+        display.columns = ["RBD", "Stations", "Daily JS %", "Monthly JS %",
+                           "Drop (ppt)", "Daily KS", "Monthly KS"]
+        st.dataframe(display.round(2), use_container_width=True, hide_index=True)
 
 
 # ── App shell ──────────────────────────────────────────────────────────────────
