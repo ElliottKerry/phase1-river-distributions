@@ -866,8 +866,11 @@ def _rbd_mode_charts(mode: str, summary: pd.DataFrame, js_params: pd.DataFrame,
     js_summary = js_summary.set_index("rbd_name").reindex(rbd_order).reset_index()
 
     # Choropleth
-    mode_label = "daily global fits (~16 k obs/station)" if mode == "daily" \
-        else "monthly pooled fits (~514 obs/station)"
+    mode_label = {
+        "daily":     "daily global fits (~16 k obs/station)",
+        "monthly":   "monthly pooled fits (~514 obs/station)",
+        "log_daily": "log-transformed daily fits",
+    }.get(mode, mode)
     fig_map = px.choropleth_map(
         js_summary,
         geojson=geojson,
@@ -890,8 +893,6 @@ def _rbd_mode_charts(mode: str, summary: pd.DataFrame, js_params: pd.DataFrame,
             "median_ks":    "Median KS",
             "mean_akaike":  "Mean Akaike wt.",
         },
-        zoom=4.8,
-        center={"lat": 52.8, "lon": -1.8},
         map_style="open-street-map",
         opacity=0.65,
     )
@@ -900,7 +901,11 @@ def _rbd_mode_charts(mode: str, summary: pd.DataFrame, js_params: pd.DataFrame,
         margin=dict(l=0, r=0, t=40, b=0),
         title=f"Johnson SU AIC win rate by RBD — {mode_label}",
         coloraxis_colorbar_title="JS wins %",
-        map=dict(bounds=dict(west=-9, east=3, south=49, north=62)),
+        map=dict(
+            center={"lat": 55.5, "lon": -3.5},
+            zoom=4.8,
+            bounds=dict(west=-9, east=3, south=49, north=62),
+        ),
     )
     st.plotly_chart(fig_map, use_container_width=True)
 
